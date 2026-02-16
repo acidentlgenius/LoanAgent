@@ -1,0 +1,7 @@
+**/__pycache__/*
+.venv/
+.cursor/
+.brv/
+__pycache__/
+.pytest_cache/
+/tests/*
