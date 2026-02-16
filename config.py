@@ -1,10 +1,13 @@
 """App-wide configuration and environment settings."""
 
 import os
+from dotenv import load_dotenv
 
-# LLM
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+load_dotenv()  # Load from .env file
+
+# LLM (Google Gemini)
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.0-flash")
 
 # Journey limits
 MAX_STEPS_GUARD = 25  # Hard terminate if exceeded

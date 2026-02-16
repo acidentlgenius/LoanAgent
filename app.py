@@ -1,4 +1,4 @@
-"""Streamlit UI — chat-based interface for the 15-step loan journey."""
+"""Streamlit UI — chat-based interface for the LLM-powered loan journey."""
 
 import streamlit as st
 from langgraph.types import Command
@@ -14,32 +14,30 @@ st.set_page_config(page_title="Loan Agent", page_icon="🏦", layout="centered")
 st.markdown("""
 <style>
     .stApp { max-width: 800px; margin: 0 auto; }
-    .step-badge {
-        display: inline-block; padding: 4px 12px; border-radius: 12px;
-        background: #4F46E5; color: white; font-size: 0.8em; font-weight: 600;
+    div[data-testid="stChatMessage"] {
+        border-radius: 12px;
+        margin-bottom: 8px;
     }
     .doc-chip {
-        display: inline-block; padding: 2px 8px; border-radius: 8px;
-        margin: 2px; font-size: 0.75em; font-weight: 500;
+        display: inline-block; padding: 3px 10px; border-radius: 8px;
+        margin: 2px 4px; font-size: 0.78em; font-weight: 500;
     }
-    .doc-pending   { background: #FEF3C7; color: #92400E; }
-    .doc-processing{ background: #DBEAFE; color: #1E40AF; }
-    .doc-completed { background: #D1FAE5; color: #065F46; }
-    .doc-verified  { background: #E0E7FF; color: #3730A3; }
+    .doc-pending    { background: #FEF3C7; color: #92400E; }
+    .doc-processing { background: #DBEAFE; color: #1E40AF; }
+    .doc-completed  { background: #D1FAE5; color: #065F46; }
+    .doc-verified   { background: #E0E7FF; color: #3730A3; }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ── Session state init ──────────────────────────────────────────────────
 def _init_session():
-    """Initialize session state on first load."""
     if "graph" not in st.session_state:
-        checkpointer = MemorySaver()
-        st.session_state.graph = build_graph(checkpointer=checkpointer)
+        st.session_state.graph = build_graph(checkpointer=MemorySaver())
         st.session_state.thread_id = "streamlit-main"
         st.session_state.config = {"configurable": {"thread_id": "streamlit-main"}}
         st.session_state.started = False
-        st.session_state.messages = []  # chat history
+        st.session_state.messages = []
         st.session_state.pending_interrupt = None
 
 _init_session()
@@ -50,7 +48,7 @@ config = st.session_state.config
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 def get_interrupt():
-    """Extract the current interrupt payload from graph state."""
+    """Extract the pending interrupt payload."""
     snapshot = graph.get_state(config)
     if snapshot and snapshot.tasks:
         for task in snapshot.tasks:
@@ -60,165 +58,128 @@ def get_interrupt():
 
 
 def get_state_values():
-    """Get current graph state values."""
     snapshot = graph.get_state(config)
     return snapshot.values if snapshot else {}
 
 
-def format_interrupt_message(interrupt_data: dict) -> str:
-    """Format an interrupt payload into a user-friendly message."""
-    msg_type = interrupt_data.get("type", "")
-    message = interrupt_data.get("message", "")
-
-    if msg_type == "document_upload":
-        docs = interrupt_data.get("required_documents", [])
-        doc_list = "\n".join(f"  • {d.replace('_', ' ').title()}" for d in docs)
-        return f"📄 **{message}**\n\n{doc_list}"
+def format_interrupt(data: dict) -> str:
+    """Format interrupt payload as a chat message."""
+    msg_type = data.get("type", "")
+    message = data.get("message", "")
 
     if msg_type == "document_verification":
-        doc = interrupt_data.get("document", "")
-        fields = interrupt_data.get("extracted_fields", {})
-        field_lines = "\n".join(f"  • **{k}**: {v}" for k, v in fields.items())
-        return f"🔍 **{message}**\n\n{field_lines}\n\nType `confirm` to verify, or provide corrections as JSON."
+        fields = data.get("extracted_fields", {})
+        field_lines = "\n".join(f"  • **{k}**: `{v}`" for k, v in fields.items())
+        return f"{message}\n\n{field_lines}\n\nReply **confirm** or provide corrections."
 
-    if msg_type == "review":
-        data = interrupt_data.get("collected_data", {})
-        lines = "\n".join(f"  • **{k}**: {v}" for k, v in data.items())
-        return f"📋 **{message}**\n\n{lines}"
-
-    if msg_type == "summary":
-        return f"✅ **{message}**"
-
-    return f"💬 **{message}**"
+    # All other types: the LLM already generated a natural message
+    return message
 
 
-def parse_user_input(text: str, interrupt_data: dict) -> any:
-    """Parse user text input based on the current interrupt type."""
-    msg_type = interrupt_data.get("type", "")
-
-    # Document upload: expect comma-separated doc_type:path pairs
-    if msg_type == "document_upload":
-        pairs = {}
-        for part in text.split(","):
-            part = part.strip()
-            if ":" in part:
-                doc_type, path = part.split(":", 1)
-                pairs[doc_type.strip().lower().replace(" ", "_")] = path.strip()
-        return pairs if pairs else text
-
-    # Verification: "confirm" or JSON corrections
-    if msg_type == "document_verification":
-        if text.strip().lower() == "confirm":
-            return {"confirmed": True}
-        try:
-            import json
-            return {"corrections": json.loads(text)}
-        except Exception:
-            return {"confirmed": True}
-
-    # Default: return raw text (or try dict-like)
-    return text
-
-
-# ── Sidebar: state dashboard ───────────────────────────────────────────
+# ── Sidebar ─────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🏦 Loan Journey")
-    state_vals = get_state_values()
+    vals = get_state_values()
 
-    if state_vals:
-        step = state_vals.get("current_step", 1)
-        guard = state_vals.get("max_steps_guard", 0)
-        finished = state_vals.get("finished", False)
+    if vals:
+        step = min(vals.get("current_step", 1), 15)
+        st.progress((step - 1) / 15, text=f"Step {step} of 15")
 
-        # Progress bar
-        progress = min((step - 1) / 15, 1.0)
-        st.progress(progress, text=f"Step {min(step, 15)} of 15")
-
-        if finished:
-            st.success("✅ Journey Complete!")
+        if vals.get("finished"):
+            st.success("✅ Complete!")
         else:
-            st.info(f"Guard counter: {guard}/25")
+            st.caption(f"Guard: {vals.get('max_steps_guard', 0)}/25")
 
-        # Document status chips
-        doc_status = state_vals.get("documents_status", {})
+        # Document chips
+        doc_status = vals.get("documents_status", {})
         if doc_status:
-            st.markdown("#### 📄 Documents")
+            st.markdown("**📄 Documents**")
             for doc, status in doc_status.items():
-                css_class = f"doc-{status}"
                 st.markdown(
-                    f'<span class="doc-chip {css_class}">{doc.replace("_", " ").title()}: {status}</span>',
+                    f'<span class="doc-chip doc-{status}">'
+                    f'{doc.replace("_", " ").title()}: {status}</span>',
                     unsafe_allow_html=True,
                 )
 
-        # Verification queue
-        queue = state_vals.get("verification_queue", [])
-        if queue:
-            st.markdown("#### 🔍 Verification Queue")
-            for doc in queue:
-                st.markdown(f"  • {doc.replace('_', ' ').title()}")
+        # Collected data preview
+        journey = vals.get("journey_data", {})
+        if journey:
+            with st.expander("📝 Collected Data", expanded=False):
+                for key, val in journey.items():
+                    if isinstance(val, dict):
+                        items = ", ".join(f"{k}: {v}" for k, v in val.items() if v)
+                        st.caption(f"**{key}**: {items}")
+                    else:
+                        st.caption(f"**{key}**: {val}")
 
-    if st.button("🔄 Reset Journey"):
+    if st.button("🔄 Reset"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
 
 
-# ── Main chat area ──────────────────────────────────────────────────────
+# ── Main ────────────────────────────────────────────────────────────────
 st.title("🏦 Loan Application Agent")
-st.caption("Walk through 15 steps to complete your loan application.")
+st.caption("A conversational AI assistant guiding you through your loan application.")
 
-# Display chat history
+# Chat history
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
+    with st.chat_message(msg["role"], avatar=msg.get("avatar")):
         st.markdown(msg["content"])
 
-# ── Start journey ───────────────────────────────────────────────────────
+# Start button
 if not st.session_state.started:
     if st.button("🚀 Start Loan Application", type="primary", use_container_width=True):
-        # Invoke graph with initial state
         graph.invoke(initial_state("streamlit-user"), config)
         st.session_state.started = True
 
-        # Get first interrupt
         interrupt_data = get_interrupt()
         if interrupt_data:
             st.session_state.pending_interrupt = interrupt_data
-            bot_msg = format_interrupt_message(interrupt_data)
-            st.session_state.messages.append({"role": "assistant", "content": bot_msg})
+            bot_msg = format_interrupt(interrupt_data)
+            st.session_state.messages.append({"role": "assistant", "content": bot_msg, "avatar": "🏦"})
         st.rerun()
 
-# ── Chat input ──────────────────────────────────────────────────────────
+# Chat input
 elif not get_state_values().get("finished", False):
-    if user_text := st.chat_input("Your response..."):
-        # Show user message
-        st.session_state.messages.append({"role": "user", "content": user_text})
+    if user_text := st.chat_input("Type your response..."):
+        st.session_state.messages.append({"role": "user", "content": user_text, "avatar": "👤"})
 
-        # Parse input based on pending interrupt type
+        # Parse document uploads specially
         interrupt_data = st.session_state.pending_interrupt or {}
-        parsed = parse_user_input(user_text, interrupt_data)
+        if interrupt_data.get("type") == "document_upload" and ":" in user_text:
+            parsed = {}
+            for part in user_text.split(","):
+                if ":" in part:
+                    k, v = part.split(":", 1)
+                    parsed[k.strip().lower().replace(" ", "_")] = v.strip()
+            resume_data = parsed or user_text
+        elif interrupt_data.get("type") == "document_verification":
+            resume_data = {"confirmed": True} if user_text.strip().lower() == "confirm" else user_text
+        else:
+            resume_data = user_text  # Free text → LLM will extract
 
-        # Resume the graph
         try:
-            graph.invoke(Command(resume=parsed), config)
+            graph.invoke(Command(resume=resume_data), config)
         except Exception as e:
-            st.session_state.messages.append(
-                {"role": "assistant", "content": f"⚠️ Error: {e}"}
-            )
+            st.session_state.messages.append({"role": "assistant", "content": f"⚠️ {e}", "avatar": "🏦"})
             st.rerun()
 
-        # Check for next interrupt
         next_interrupt = get_interrupt()
         if next_interrupt:
             st.session_state.pending_interrupt = next_interrupt
-            bot_msg = format_interrupt_message(next_interrupt)
-            st.session_state.messages.append({"role": "assistant", "content": bot_msg})
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": format_interrupt(next_interrupt),
+                "avatar": "🏦",
+            })
         else:
-            # Journey complete
-            st.session_state.messages.append(
-                {"role": "assistant", "content": "✅ **Your loan application has been submitted!**"}
-            )
-
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "✅ Your loan application has been submitted!",
+                "avatar": "🏦",
+            })
         st.rerun()
 else:
     st.balloons()
-    st.success("🎉 Your loan application journey is complete! Thank you.")
+    st.success("🎉 Your loan application is complete!")
