@@ -22,7 +22,7 @@ def get_secret(key, default=None):
 
 # LLM (Google Gemini)
 GOOGLE_API_KEY = get_secret("GOOGLE_API_KEY", "")
-LLM_MODEL = get_secret("LLM_MODEL", "gemini-2.5-flash-lite")
+LLM_MODEL = get_secret("LLM_MODEL", "gemini-2.5-flash")
 
 # Journey limits
 MAX_STEPS_GUARD = 25  # Hard terminate if exceeded
