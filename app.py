@@ -6,6 +6,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from graph.state import initial_state
 from graph.builder import build_graph
+from graph.llm import clear_prompt_cache
 from workers import processing_store
 
 # ── Page config ─────────────────────────────────────────────────────────
@@ -48,9 +49,22 @@ graph = st.session_state.graph
 config = st.session_state.config
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────
+# ── Helpers (single snapshot per render) ────────────────────────────────
+def _snapshot():
+    """Read the graph state once and cache for this render cycle."""
+    if "snapshot" not in st.session_state or st.session_state.get("_snapshot_stale"):
+        st.session_state.snapshot = graph.get_state(config)
+        st.session_state._snapshot_stale = False
+    return st.session_state.snapshot
+
+
+def _mark_stale():
+    """Mark snapshot as stale so the next read refreshes it."""
+    st.session_state._snapshot_stale = True
+
+
 def get_interrupt():
-    snapshot = graph.get_state(config)
+    snapshot = _snapshot()
     if snapshot and snapshot.tasks:
         for task in snapshot.tasks:
             if hasattr(task, "interrupts") and task.interrupts:
@@ -59,7 +73,7 @@ def get_interrupt():
 
 
 def get_state_values():
-    snapshot = graph.get_state(config)
+    snapshot = _snapshot()
     return snapshot.values if snapshot else {}
 
 
@@ -132,6 +146,7 @@ with st.sidebar:
 
     if st.button("🔄 Reset"):
         processing_store.reset()
+        clear_prompt_cache()
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
@@ -150,6 +165,7 @@ for msg in st.session_state.messages:
 if not st.session_state.started:
     if st.button("🚀 Start Loan Application", type="primary", use_container_width=True):
         graph.invoke(initial_state("streamlit-user"), config)
+        _mark_stale()
         st.session_state.started = True
 
         interrupt_data = get_interrupt()
@@ -179,6 +195,7 @@ elif not get_state_values().get("finished", False):
 
         try:
             graph.invoke(Command(resume=resume_data), config)
+            _mark_stale()
         except Exception as e:
             st.session_state.messages.append({
                 "role": "assistant",

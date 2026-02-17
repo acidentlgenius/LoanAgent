@@ -82,61 +82,90 @@ STEP_DEFS: dict[str, dict] = {
 }
 
 
-# ── LLM instance ───────────────────────────────────────────────────────
+# ── LLM instance (singleton) ───────────────────────────────────────────
+_llm_instance = None
+
+
 def _get_llm():
-    """Lazy LLM init — returns None if no API key."""
+    """Lazy singleton — creates the LLM once, reuses on every call."""
+    global _llm_instance
+    if _llm_instance is not None:
+        return _llm_instance
     if not GOOGLE_API_KEY or GOOGLE_API_KEY == "your-google-api-key-here":
         return None
-    return ChatGoogleGenerativeAI(
+    _llm_instance = ChatGoogleGenerativeAI(
         model=LLM_MODEL,
         google_api_key=GOOGLE_API_KEY,
         temperature=0.7,
     )
+    return _llm_instance
+
+
+# ── Prompt cache (avoids repeated LLM call on interrupt replay) ────────
+_prompt_cache: dict[tuple[str, int], str] = {}
 
 
 # ── Prompt generation ──────────────────────────────────────────────────
 def generate_step_message(step_name: str, step_num: int, journey_data: dict) -> str:
-    """Generate a warm, contextual prompt for a journey step using the LLM."""
+    """Generate a warm, human-like prompt for a journey step.
+
+    Uses a module-level cache so the interrupt replay (LangGraph re-executes
+    the node on resume) returns the cached prompt instantly instead of
+    making another API call.
+    """
+    cache_key = (step_name, step_num)
+    if cache_key in _prompt_cache:
+        return _prompt_cache[cache_key]
+
     step_def = STEP_DEFS.get(step_name, {})
-    fields_desc = ", ".join(step_def.get("fields", {}).values())
     ask_desc = step_def.get("ask", step_name)
 
     # Build context from previous answers
     context_lines = []
     for key, val in journey_data.items():
         if isinstance(val, dict):
-            readable = ", ".join(f"{k}: {v}" for k, v in val.items())
+            readable = ", ".join(f"{k}: {v}" for k, v in val.items() if v)
             context_lines.append(f"  {key}: {readable}")
         else:
             context_lines.append(f"  {key}: {val}")
-    context = "\n".join(context_lines) if context_lines else "  (No data collected yet)"
+    context = "\n".join(context_lines) if context_lines else "  (Nothing yet)"
 
     llm = _get_llm()
     if not llm:
-        # Fallback: template-based prompt
         return _template_prompt(step_name, step_num, journey_data)
 
     system = (
-        "You are a friendly, professional loan application assistant. "
-        "You are guiding the user through a 15-step loan application. "
-        "Generate a SHORT, warm, conversational message to ask the user for the required information. "
-        "If previous data has been collected, acknowledge it briefly (e.g., use their name). "
-        "Be concise — 1-3 sentences max. Do not use bullet points or field names. "
-        "Speak naturally like a helpful bank representative."
+        "You are a warm, friendly loan advisor chatting with a customer. "
+        "Talk like a real human — casual but professional, like a good bank relationship manager. "
+        "RULES:\n"
+        "- NEVER mention step numbers, field names, or form-like language\n"
+        "- NEVER use bullet points or numbered lists\n"
+        "- Acknowledge what the user just told you naturally (use their name if you know it)\n"
+        "- Ask for the next piece of info in a conversational way\n"
+        "- Keep it to 1-2 short sentences, like a text message\n"
+        "- Vary your style — don't start every message the same way\n"
+        "- Sound human, not like a bot reading a script"
     )
     human = (
-        f"Step {step_num} of 15.\n"
-        f"You need to collect: {ask_desc}\n"
-        f"Fields to extract: {fields_desc}\n"
+        f"This is step {step_num} of 15 (don't mention this to the user).\n"
+        f"You need to ask about: {ask_desc}\n"
         f"Data collected so far:\n{context}\n\n"
-        f"Generate the message to ask the user."
+        f"Write your message to the customer."
     )
 
     try:
         response = llm.invoke([SystemMessage(content=system), HumanMessage(content=human)])
-        return response.content.strip()
+        result = response.content.strip()
     except Exception:
-        return _template_prompt(step_name, step_num, journey_data)
+        result = _template_prompt(step_name, step_num, journey_data)
+
+    _prompt_cache[cache_key] = result
+    return result
+
+
+def clear_prompt_cache():
+    """Clear the prompt cache (used on session reset)."""
+    _prompt_cache.clear()
 
 
 def _template_prompt(step_name: str, step_num: int, journey_data: dict) -> str:
