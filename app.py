@@ -33,9 +33,19 @@ st.markdown("""
 
 
 # ── Session state init ──────────────────────────────────────────────────
+import sqlite3
 def _init_session():
     if "graph" not in st.session_state:
-        st.session_state.graph = build_graph(checkpointer=MemorySaver())
+        try:
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            # DB connection for persistence
+            conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
+            checkpointer = SqliteSaver(conn)
+        except ImportError:
+            from langgraph.checkpoint.memory import MemorySaver
+            checkpointer = MemorySaver()
+        
+        st.session_state.graph = build_graph(checkpointer=checkpointer)
         st.session_state.thread_id = "streamlit-main"
         st.session_state.config = {"configurable": {"thread_id": "streamlit-main"}}
         st.session_state.started = False
@@ -164,7 +174,9 @@ for msg in st.session_state.messages:
 # Start button
 if not st.session_state.started:
     if st.button("🚀 Start Loan Application", type="primary", use_container_width=True):
-        graph.invoke(initial_state("streamlit-user"), config)
+        # Run async graph via asyncio.run
+        import asyncio
+        asyncio.run(graph.ainvoke(initial_state("streamlit-user"), config))
         _mark_stale()
         st.session_state.started = True
 
@@ -194,7 +206,8 @@ elif not get_state_values().get("finished", False):
             resume_data = user_text  # Free text → LLM extracts
 
         try:
-            graph.invoke(Command(resume=resume_data), config)
+            import asyncio
+            asyncio.run(graph.ainvoke(Command(resume=resume_data), config))
             _mark_stale()
         except Exception as e:
             st.session_state.messages.append({

@@ -1,6 +1,6 @@
 """LoanState schema — single source of truth for the graph state."""
 
-from typing import TypedDict, Optional
+from typing import TypedDict, Any, List, Dict, Optional, Union
 
 
 class LoanState(TypedDict):
@@ -15,13 +15,13 @@ class LoanState(TypedDict):
     finished: bool
 
     # Collected data  {step_name: value}
-    journey_data: dict
+    journey_data: Dict[str, Any]
 
     # Document lifecycle
-    documents_uploaded: dict    # {doc_type: file_path}
-    documents_status: dict      # {doc_type: pending|processing|completed|verified}
-    extracted_data: dict        # {doc_type: {field: value}}
-    verification_queue: list    # ["bank_statement", …]
+    documents_uploaded: Dict[str, str]    # {doc_type: file_path}
+    documents_status: Dict[str, str]      # {doc_type: pending|processing|completed|verified}
+    extracted_data: Dict[str, Any]        # {doc_type: {field: value}}
+    verification_queue: List[str]         # ["bank_statement", …]
 
 
 def initial_state(user_id: str) -> LoanState:

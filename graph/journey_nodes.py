@@ -1,14 +1,11 @@
-"""15 journey step nodes — LLM-powered, data-driven, with async doc sync.
+"""Journey nodes — Generic and specific steps for the loan application.
 
-Each step:
-  1. LLM generates a contextual, conversational prompt
-  2. interrupt() pauses for user input
-  3. LLM extracts structured data from free-text response
-  4. Checks processing_store for completed documents → injects into verification_queue
-  5. State advances deterministically
+Refactored to shrink code and improve performance via async execution.
 """
 
-import time
+import asyncio
+from typing import Dict, Any
+
 from langgraph.types import interrupt
 from graph.state import LoanState
 from graph.llm import (
@@ -25,14 +22,9 @@ REQUIRED_DOCUMENTS = ["bank_statement", "payslip", "cibil", "pan", "aadhaar"]
 
 
 # ── Sync helper: inject completed docs into state ──────────────────────
-def _sync_docs(state: LoanState) -> dict:
+def _sync_docs(state: LoanState) -> Dict[str, Any]:
     """
-    Pop all completed docs from the processing_store and prepare
-    state updates: add to verification_queue, store extracted_data,
-    mark documents_status as 'ready_for_verification'.
-
-    Called after every interrupt() return so that newly finished
-    documents get routed via the router's priority check.
+    Pop all completed docs from the processing_store and prepare state updates.
     """
     completed = processing_store.pop_completed()
     if not completed:
@@ -54,17 +46,13 @@ def _sync_docs(state: LoanState) -> dict:
     }
 
 
-# ── Core step handler (DRY) ────────────────────────────────────────────
-def _llm_step(state: LoanState, step_name: str) -> dict:
+# ── Universal Step Node ────────────────────────────────────────────────
+async def universal_step_node(state: LoanState, step_name: str) -> Dict[str, Any]:
     """
-    Generic LLM-powered step:
-      - Generate contextual prompt via LLM
-      - Interrupt for user input
-      - Extract structured data via LLM
-      - Sync any completed documents from the processing store
-      - Advance state
+    Generic LLM-powered step handler.
+    Used for all steps that follow the prompt -> interrupt -> extract pattern.
     """
-    prompt = generate_step_message(step_name, state["current_step"], state["journey_data"])
+    prompt = await generate_step_message(step_name, state["current_step"], state["journey_data"])
 
     user_text = interrupt({
         "type": "journey_step",
@@ -74,7 +62,7 @@ def _llm_step(state: LoanState, step_name: str) -> dict:
     })
 
     # ── Runs only on resume (after interrupt returns) ──
-    extracted = extract_step_data(step_name, str(user_text))
+    extracted = await extract_step_data(step_name, str(user_text))
 
     result = {
         "journey_data": {**state["journey_data"], step_name: extracted},
@@ -89,29 +77,14 @@ def _llm_step(state: LoanState, step_name: str) -> dict:
     return result
 
 
-# ── Step functions ──────────────────────────────────────────────────────
+# ── Specific Nodes ──────────────────────────────────────────────────────
 
-def step_1_name(state: LoanState) -> dict:
-    return _llm_step(state, "name")
+async def document_upload_node(state: LoanState) -> Dict[str, Any]:
+    """Step 5: Collect document uploads — kicks off async processing."""
+    prompt = await generate_step_message("document_upload", 5, state["journey_data"])
 
-
-def step_2_dob(state: LoanState) -> dict:
-    return _llm_step(state, "dob")
-
-
-def step_3_contact(state: LoanState) -> dict:
-    return _llm_step(state, "contact")
-
-
-def step_4_income(state: LoanState) -> dict:
-    return _llm_step(state, "income")
-
-
-def step_5_document_upload(state: LoanState) -> dict:
-    """Collect document uploads — kicks off async processing for all 5 docs."""
-    prompt = generate_step_message("document_upload", 5, state["journey_data"])
-
-    user_input = interrupt({
+    # Simulate upload prompt
+    interrupt({
         "type": "document_upload",
         "step": 5,
         "required_documents": REQUIRED_DOCUMENTS,
@@ -119,7 +92,6 @@ def step_5_document_upload(state: LoanState) -> dict:
     })
 
     # Accept any response — we start processing all 5 required docs
-    # (In production, user_input would contain actual file paths)
     new_uploaded = dict(state["documents_uploaded"])
     new_status = dict(state["documents_status"])
 
@@ -136,50 +108,18 @@ def step_5_document_upload(state: LoanState) -> dict:
     }
 
 
-def step_6_employment(state: LoanState) -> dict:
-    return _llm_step(state, "employment")
-
-
-def step_7_address(state: LoanState) -> dict:
-    return _llm_step(state, "address")
-
-
-def step_8_loan_amount(state: LoanState) -> dict:
-    return _llm_step(state, "loan_amount")
-
-
-def step_9_loan_tenure(state: LoanState) -> dict:
-    return _llm_step(state, "loan_tenure")
-
-
-def step_10_purpose(state: LoanState) -> dict:
-    return _llm_step(state, "purpose")
-
-
-def step_11_references(state: LoanState) -> dict:
-    return _llm_step(state, "references")
-
-
-def step_12_bank_details(state: LoanState) -> dict:
-    return _llm_step(state, "bank_details")
-
-
-def step_13_consent(state: LoanState) -> dict:
-    return _llm_step(state, "consent")
-
-
-def step_14_review(state: LoanState) -> dict:
-    """Present LLM-generated summary for review.
-    Blocks until all documents are processed and verified."""
-
-    # Wait for all documents to finish processing before review
+async def review_node(state: LoanState) -> Dict[str, Any]:
+    """Step 14: Present LLM-generated summary for review.
+    Async waits for all documents to be processed.
+    """
+    # Async non-blocking wait
     while processing_store.is_any_processing():
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
 
     # One final sync to pick up any remaining docs
     doc_updates = _sync_docs(state)
 
-    summary = generate_review_summary(state["journey_data"])
+    summary = await generate_review_summary(state["journey_data"])
 
     user_input = interrupt({
         "type": "review",
@@ -198,9 +138,9 @@ def step_14_review(state: LoanState) -> dict:
     return result
 
 
-def step_15_summary(state: LoanState) -> dict:
-    """Final summary — LLM generates confirmation, marks journey finished."""
-    final_msg = generate_final_summary(state["journey_data"], state["documents_status"])
+async def summary_node(state: LoanState) -> Dict[str, Any]:
+    """Step 15: Final summary — LLM generates confirmation."""
+    final_msg = await generate_final_summary(state["journey_data"], state["documents_status"])
 
     interrupt({
         "type": "summary",
@@ -215,16 +155,3 @@ def step_15_summary(state: LoanState) -> dict:
         "max_steps_guard": state["max_steps_guard"] + 1,
         "finished": True,
     }
-
-
-# ── Registry (used by builder.py) ──────────────────────────────────────
-STEP_FUNCTIONS: dict[int, callable] = {
-    1: step_1_name,       2: step_2_dob,
-    3: step_3_contact,    4: step_4_income,
-    5: step_5_document_upload,
-    6: step_6_employment, 7: step_7_address,
-    8: step_8_loan_amount, 9: step_9_loan_tenure,
-    10: step_10_purpose,  11: step_11_references,
-    12: step_12_bank_details, 13: step_13_consent,
-    14: step_14_review,   15: step_15_summary,
-}

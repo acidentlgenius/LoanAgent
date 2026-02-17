@@ -8,12 +8,16 @@ The LLM is used ONLY for:
 """
 
 import json
+import logging
+from typing import Optional, Any, Dict
+
+from pydantic import BaseModel, Field, create_model
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from config import GOOGLE_API_KEY, LLM_MODEL
 
 # ── Step definitions (data-driven) ──────────────────────────────────────
-STEP_DEFS: dict[str, dict] = {
+STEP_DEFS: Dict[str, dict] = {
     "name": {
         "fields": {"first_name": "First name", "last_name": "Last name"},
         "ask": "the applicant's full name (first and last)",
@@ -91,7 +95,8 @@ def _get_llm():
     global _llm_instance
     if _llm_instance is not None:
         return _llm_instance
-    if not GOOGLE_API_KEY or GOOGLE_API_KEY == "your-google-api-key-here":
+    if not GOOGLE_API_KEY:
+        print("Wait, what? No API key found. Check your .env file.")
         return None
     _llm_instance = ChatGoogleGenerativeAI(
         model=LLM_MODEL,
@@ -106,13 +111,8 @@ _prompt_cache: dict[tuple[str, int], str] = {}
 
 
 # ── Prompt generation ──────────────────────────────────────────────────
-def generate_step_message(step_name: str, step_num: int, journey_data: dict) -> str:
-    """Generate a warm, human-like prompt for a journey step.
-
-    Uses a module-level cache so the interrupt replay (LangGraph re-executes
-    the node on resume) returns the cached prompt instantly instead of
-    making another API call.
-    """
+async def generate_step_message(step_name: str, step_num: int, journey_data: dict) -> str:
+    """Generate a warm, human-like prompt for a journey step (Async)."""
     cache_key = (step_name, step_num)
     if cache_key in _prompt_cache:
         return _prompt_cache[cache_key]
@@ -154,9 +154,10 @@ def generate_step_message(step_name: str, step_num: int, journey_data: dict) -> 
     )
 
     try:
-        response = llm.invoke([SystemMessage(content=system), HumanMessage(content=human)])
+        response = await llm.ainvoke([SystemMessage(content=system), HumanMessage(content=human)])
         result = response.content.strip()
-    except Exception:
+    except Exception as e:
+        logging.error(f"Error generating prompt: {e}")
         result = _template_prompt(step_name, step_num, journey_data)
 
     _prompt_cache[cache_key] = result
@@ -182,55 +183,43 @@ def _template_prompt(step_name: str, step_num: int, journey_data: dict) -> str:
 
 
 # ── Data extraction ────────────────────────────────────────────────────
-def extract_step_data(step_name: str, user_text: str) -> dict:
-    """Extract structured fields from user's free-text response using LLM."""
+async def extract_step_data(step_name: str, user_text: str) -> dict:
+    """Extract structured fields from user's free-text response using LLM & Pydantic."""
     step_def = STEP_DEFS.get(step_name, {})
     fields = step_def.get("fields", {})
 
     llm = _get_llm()
     if not llm:
-        # Fallback: return raw text
         return {"raw_input": user_text}
 
-    fields_json = json.dumps(fields, indent=2)
+    # Dynamically create Pydantic model
+    field_definitions = {k: (Optional[str], Field(None, description=desc)) for k, desc in fields.items()}
+    DynamicModel = create_model(f"{step_name}_Extraction", **field_definitions)
+
+    structured_llm = llm.with_structured_output(DynamicModel)
+
     system = (
         "You are a data extraction assistant. "
         "Extract the specified fields from the user's response. "
-        "Return ONLY a valid JSON object with the field keys and extracted values. "
-        "If a field is missing, set its value to null. "
+        "If a field is missing, leave it as null. "
         "Be smart about parsing — e.g., '5 lakhs' → '500000', 'three years' → '3'."
     )
-    human = (
-        f"Fields to extract:\n{fields_json}\n\n"
-        f"User's response: \"{user_text}\"\n\n"
-        f"Return the JSON object with extracted values."
-    )
+    human = f"User's response: \"{user_text}\""
 
     try:
-        response = llm.invoke([SystemMessage(content=system), HumanMessage(content=human)])
-        text = response.content.strip()
-        # Strip markdown code fences if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            text = text.rsplit("```", 1)[0]
-        return json.loads(text.strip())
-    except Exception:
+        extraction = await structured_llm.ainvoke([SystemMessage(content=system), HumanMessage(content=human)])
+        return extraction.model_dump(exclude_none=True)
+    except Exception as e:
+        logging.error(f"Error extracting data: {e}")
         return {"raw_input": user_text}
 
 
 # ── Review / Summary generation ────────────────────────────────────────
-def generate_review_summary(journey_data: dict) -> str:
+async def generate_review_summary(journey_data: dict) -> str:
     """Generate a human-readable summary of all collected data for review."""
     llm = _get_llm()
     if not llm:
-        lines = []
-        for key, val in journey_data.items():
-            if isinstance(val, dict):
-                readable = ", ".join(f"{k}: {v}" for k, v in val.items())
-                lines.append(f"• **{key.replace('_', ' ').title()}**: {readable}")
-            else:
-                lines.append(f"• **{key.replace('_', ' ').title()}**: {val}")
-        return "Here's everything you've provided:\n\n" + "\n".join(lines)
+        return _fallback_summary(journey_data)
 
     data_json = json.dumps(journey_data, indent=2, default=str)
     system = (
@@ -242,13 +231,24 @@ def generate_review_summary(journey_data: dict) -> str:
     human = f"Collected application data:\n{data_json}\n\nGenerate a review summary."
 
     try:
-        response = llm.invoke([SystemMessage(content=system), HumanMessage(content=human)])
+        response = await llm.ainvoke([SystemMessage(content=system), HumanMessage(content=human)])
         return response.content.strip()
     except Exception:
-        return data_json
+        return _fallback_summary(journey_data)
 
 
-def generate_final_summary(journey_data: dict, documents_status: dict) -> str:
+def _fallback_summary(journey_data: dict) -> str:
+    lines = []
+    for key, val in journey_data.items():
+        if isinstance(val, dict):
+            readable = ", ".join(f"{k}: {v}" for k, v in val.items())
+            lines.append(f"• **{key.replace('_', ' ').title()}**: {readable}")
+        else:
+            lines.append(f"• **{key.replace('_', ' ').title()}**: {val}")
+    return "Here's everything you've provided:\n\n" + "\n".join(lines)
+
+
+async def generate_final_summary(journey_data: dict, documents_status: dict) -> str:
     """Generate the final application summary."""
     llm = _get_llm()
     if not llm:
@@ -268,7 +268,7 @@ def generate_final_summary(journey_data: dict, documents_status: dict) -> str:
     )
 
     try:
-        response = llm.invoke([SystemMessage(content=system), HumanMessage(content=human)])
+        response = await llm.ainvoke([SystemMessage(content=system), HumanMessage(content=human)])
         return response.content.strip()
     except Exception:
         return "Your loan application has been submitted successfully! We'll be in touch soon."

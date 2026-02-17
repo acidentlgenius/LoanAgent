@@ -40,8 +40,8 @@ DOC_DELAYS: dict[str, float] = {
     "bank_statement": 2.0,
     "payslip": 10.0,
     "cibil": 20.0,
-    "pan": 20.0,
-    "aadhaar": 25.0,
+    "pan": 30.0,
+    "aadhaar": 45.0,
 }
 
 
