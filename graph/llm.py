@@ -154,8 +154,11 @@ async def generate_step_message(step_name: str, step_num: int, journey_data: dic
     )
 
     try:
-        response = await llm.ainvoke([SystemMessage(content=system), HumanMessage(content=human)])
-        result = response.content.strip()
+        # Use astream to emit on_chat_model_stream events for the graph
+        full_response = ""
+        async for chunk in llm.astream([SystemMessage(content=system), HumanMessage(content=human)]):
+            full_response += chunk.content
+        result = full_response.strip()
     except Exception as e:
         logging.error(f"Error generating prompt: {e}")
         result = _template_prompt(step_name, step_num, journey_data)

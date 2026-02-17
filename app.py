@@ -162,6 +162,28 @@ with st.sidebar:
         st.rerun()
 
 
+# ── Stream Runner ───────────────────────────────────────────────────────
+async def run_graph_stream(input_data, config):
+    """Run the graph and stream LLM tokens to the UI."""
+    msg_placeholder = st.empty()
+    full_response = ""
+    
+    # We use astream_events to catch 'on_chat_model_stream'
+    # 'v2' is required for LangChain > 0.2
+    async for event in graph.astream_events(input_data, config, version="v2"):
+        kind = event["event"]
+        
+        if kind == "on_chat_model_stream":
+            content = event["data"]["chunk"].content
+            if content:
+                full_response += content
+                msg_placeholder.write(full_response + "▌")
+    
+    # Final cleanup
+    msg_placeholder.empty()
+    return full_response
+
+
 # ── Main ────────────────────────────────────────────────────────────────
 st.title("🏦 Loan Application Agent")
 st.caption("A conversational AI assistant guiding you through your loan application.")
@@ -174,15 +196,17 @@ for msg in st.session_state.messages:
 # Start button
 if not st.session_state.started:
     if st.button("🚀 Start Loan Application", type="primary", use_container_width=True):
-        # Run async graph via asyncio.run
         import asyncio
-        asyncio.run(graph.ainvoke(initial_state("streamlit-user"), config))
+        asyncio.run(run_graph_stream(initial_state("streamlit-user"), config))
+        
         _mark_stale()
         st.session_state.started = True
 
         interrupt_data = get_interrupt()
         if interrupt_data:
             st.session_state.pending_interrupt = interrupt_data
+            # Using the cached prompt from the node (which we just streamed)
+            # We add it to history so it persists
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": format_interrupt(interrupt_data),
@@ -207,7 +231,7 @@ elif not get_state_values().get("finished", False):
 
         try:
             import asyncio
-            asyncio.run(graph.ainvoke(Command(resume=resume_data), config))
+            asyncio.run(run_graph_stream(Command(resume=resume_data), config))
             _mark_stale()
         except Exception as e:
             st.session_state.messages.append({
