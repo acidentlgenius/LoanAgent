@@ -4,13 +4,13 @@ from typing import TypedDict, Any, List, Dict, Optional, Union
 
 
 class LoanState(TypedDict):
-    """Flat state dict for the 15-step loan journey."""
+    """Flat state dict for the 14-step loan journey."""
 
     # Identity
     user_id: str
 
     # Journey tracking
-    current_step: int           # 1–15
+    current_step: int           # 1–14
     max_steps_guard: int        # Incremented every node; terminate if > 25
     finished: bool
 

@@ -11,8 +11,8 @@ RouterDest = Literal[
     "step_1_name", "step_2_dob", "step_3_contact", "step_4_income",
     "step_5_document_upload", "step_6_employment", "step_7_address",
     "step_8_loan_amount", "step_9_loan_tenure", "step_10_purpose",
-    "step_11_references", "step_12_bank_details", "step_13_consent",
-    "step_14_review", "step_15_summary",
+    "step_11_references", "step_12_consent",
+    "step_13_review", "step_14_summary",
     "finish",
 ]
 
@@ -29,10 +29,9 @@ STEP_NODE_MAP: dict[int, str] = {
     9: "step_9_loan_tenure",
     10: "step_10_purpose",
     11: "step_11_references",
-    12: "step_12_bank_details",
-    13: "step_13_consent",
-    14: "step_14_review",
-    15: "step_15_summary",
+    12: "step_12_consent",
+    13: "step_13_review",
+    14: "step_14_summary",
 }
 
 

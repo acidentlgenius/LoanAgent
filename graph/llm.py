@@ -80,12 +80,6 @@ STEP_DEFS: Dict[str, dict] = {
         "ask": "a personal reference (name, phone, relationship)",
         "example": "Rahul Verma, 9988776655, colleague",
     },
-    "bank_details": {
-        "fields": {"account_number": "Bank account number", "ifsc": "IFSC code (e.g. HDFC0001234)", "bank_name": "Bank name"},
-        "required": ["account_number", "ifsc", "bank_name"],
-        "ask": "their bank account details for loan disbursement",
-        "example": "HDFC Bank, A/C 12345678, IFSC HDFC0001234",
-    },
     "consent": {
         "fields": {"agreed": "Whether user agrees to T&C (yes/no)"},
         "required": ["agreed"],
@@ -162,7 +156,7 @@ async def generate_step_message(step_name: str, step_num: int, journey_data: dic
         "- Sound human, not like a bot reading a script"
     )
     human = (
-        f"This is step {step_num} of 15 (don't mention this to the user).\n"
+        f"This is step {step_num} of 14 (don't mention this to the user).\n"
         f"You need to ask about: {ask_desc}\n"
         f"Data collected so far:\n{context}\n\n"
         f"Write your message to the customer."
@@ -207,7 +201,7 @@ def _template_prompt(step_name: str, step_num: int, journey_data: dict) -> str:
         greeting = f"Thanks, {name_data['first_name']}! "
     elif isinstance(name_data, str):
         greeting = f"Thanks! "
-    return f"{greeting}Step {step_num}/15 — Please provide {ask}."
+    return f"{greeting}Step {step_num}/14 — Please provide {ask}."
 
 
 # ── Field validators (Pydantic-style) ────────────────────────────────────
@@ -272,15 +266,6 @@ def _normalize_pincode(val: str) -> str | None:
     return digits[:6] if len(digits) >= 6 else None
 
 
-def _normalize_ifsc(val: str) -> str | None:
-    """IFSC: 4 letters + 7 alphanumeric."""
-    if not val:
-        return None
-    val = str(val).strip().upper()
-    m = re.search(r"([A-Z]{4}0[A-Z0-9]{6})", val)
-    return m.group(1) if m else None
-
-
 # Map step+field → normalizer
 FIELD_NORMALIZERS: Dict[tuple[str, str], Any] = {
     ("contact", "phone"): _normalize_phone,
@@ -289,7 +274,6 @@ FIELD_NORMALIZERS: Dict[tuple[str, str], Any] = {
     ("address", "pincode"): _normalize_pincode,
     ("loan_amount", "amount"): _normalize_amount,
     ("references", "ref_phone"): _normalize_phone,
-    ("bank_details", "ifsc"): _normalize_ifsc,
 }
 
 
@@ -451,7 +435,7 @@ async def generate_final_summary(journey_data: dict, documents_status: dict) -> 
 
     system = (
         "You are a loan application assistant. "
-        "The applicant has completed all 15 steps. "
+        "The applicant has completed all 14 steps. "
         "Generate a warm, professional final summary confirming submission. "
         "Mention key details (name, loan amount, tenure) if available. "
         "Keep it concise — 3-5 sentences."

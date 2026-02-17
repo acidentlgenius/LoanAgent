@@ -128,7 +128,7 @@ async def document_upload_node(state: LoanState) -> Dict[str, Any]:
 
 
 async def review_node(state: LoanState) -> Dict[str, Any]:
-    """Step 14: Present LLM-generated summary for review.
+    """Step 13: Present LLM-generated summary for review.
     Async waits for all documents to be processed.
     """
     # Async non-blocking wait
@@ -142,7 +142,7 @@ async def review_node(state: LoanState) -> Dict[str, Any]:
 
     user_input = interrupt({
         "type": "review",
-        "step": 14,
+        "step": 13,
         "collected_data": state["journey_data"],
         "documents_status": {**state["documents_status"], **doc_updates.get("documents_status", {})},
         "message": f"📋 **Application Review**\n\n{summary}\n\nPlease confirm everything looks correct, or let me know what to change.",
@@ -158,19 +158,19 @@ async def review_node(state: LoanState) -> Dict[str, Any]:
 
 
 async def summary_node(state: LoanState) -> Dict[str, Any]:
-    """Step 15: Final summary — LLM generates confirmation."""
+    """Step 14: Final summary — LLM generates confirmation."""
     final_msg = await generate_final_summary(state["journey_data"], state["documents_status"])
 
     interrupt({
         "type": "summary",
-        "step": 15,
+        "step": 14,
         "journey_data": state["journey_data"],
         "documents_status": state["documents_status"],
         "message": final_msg,
     })
 
     return {
-        "current_step": 16,
+        "current_step": 15,
         "max_steps_guard": state["max_steps_guard"] + 1,
         "finished": True,
     }
