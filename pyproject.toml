@@ -7,6 +7,7 @@ dependencies = [
     "langgraph>=0.4",
     "langchain>=0.3",
     "langchain-google-genai>=4.0",
+    "langsmith>=0.1",
     "python-dotenv>=1.0",
     "fastapi>=0.115",
     "uvicorn>=0.34",

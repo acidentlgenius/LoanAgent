@@ -8,6 +8,7 @@ from langgraph.types import Command
 from config import HOST, PORT
 from graph.state import initial_state
 from graph.builder import build_graph
+from langsmith_tracing import flow_trace, continue_flow_trace, clear_flow_trace
 
 # ── App + graph ─────────────────────────────────────────────────────────
 app = FastAPI(title="Loan Agent", version="1.0.0")
@@ -33,7 +34,8 @@ def start_journey(req: StartRequest):
     user_id = req.user_id or thread_id
     config = {"configurable": {"thread_id": thread_id}}
 
-    result = graph.invoke(initial_state(user_id), config)
+    with flow_trace(thread_id, user_id):
+        result = graph.invoke(initial_state(user_id), config)
 
     return {
         "thread_id": thread_id,
@@ -52,7 +54,12 @@ def resume_journey(req: ResumeRequest):
     if not snapshot or not snapshot.tasks:
         raise HTTPException(404, "No pending interrupt for this thread.")
 
-    result = graph.invoke(Command(resume=req.data), config)
+    with continue_flow_trace(req.thread_id):
+        result = graph.invoke(Command(resume=req.data), config)
+
+    # Clear trace when flow is complete
+    if result.get("finished"):
+        clear_flow_trace(req.thread_id)
 
     return {
         "thread_id": req.thread_id,

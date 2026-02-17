@@ -6,8 +6,9 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from graph.state import initial_state
 from graph.builder import build_graph
-from graph.llm import clear_prompt_cache
+from graph.llm import clear_prompt_cache, clear_llm_instance
 from workers import processing_store
+from langsmith_tracing import flow_trace, continue_flow_trace, clear_flow_trace
 
 # ── Page config ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="Loan Agent", page_icon="🏦", layout="centered")
@@ -157,6 +158,8 @@ with st.sidebar:
     if st.button("🔄 Reset"):
         processing_store.reset()
         clear_prompt_cache()
+        clear_llm_instance()
+        clear_flow_trace(config.get("configurable", {}).get("thread_id", "streamlit-main"))
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
@@ -164,21 +167,33 @@ with st.sidebar:
 
 # ── Stream Runner ───────────────────────────────────────────────────────
 async def run_graph_stream(input_data, config):
-    """Run the graph and stream LLM tokens to the UI."""
+    """Run the graph and stream LLM tokens to the UI. Wrapped in LangSmith trace."""
+    # Clear LLM singleton to avoid "Event loop is closed" — each asyncio.run()
+    # creates a new loop; a cached LLM holds HTTP clients tied to the old loop
+    clear_llm_instance()
+
     msg_placeholder = st.empty()
     full_response = ""
-    
-    # We use astream_events to catch 'on_chat_model_stream'
-    # 'v2' is required for LangChain > 0.2
-    async for event in graph.astream_events(input_data, config, version="v2"):
-        kind = event["event"]
-        
-        if kind == "on_chat_model_stream":
-            content = event["data"]["chunk"].content
-            if content:
-                full_response += content
-                msg_placeholder.write(full_response + "▌")
-    
+    thread_id = config.get("configurable", {}).get("thread_id", "streamlit-main")
+    is_resume = get_state_values().get("current_step", 1) > 1
+
+    if is_resume:
+        ctx = continue_flow_trace(thread_id)
+    else:
+        ctx = flow_trace(thread_id, user_id="streamlit-user")
+
+    with ctx:
+        # We use astream_events to catch 'on_chat_model_stream'
+        # 'v2' is required for LangChain > 0.2
+        async for event in graph.astream_events(input_data, config, version="v2"):
+            kind = event["event"]
+
+            if kind == "on_chat_model_stream":
+                content = event["data"]["chunk"].content
+                if content:
+                    full_response += content
+                    msg_placeholder.write(full_response + "▌")
+
     # Final cleanup
     msg_placeholder.empty()
     return full_response
@@ -257,5 +272,6 @@ elif not get_state_values().get("finished", False):
             })
         st.rerun()
 else:
+    clear_flow_trace(config.get("configurable", {}).get("thread_id", "streamlit-main"))
     st.balloons()
     st.success("🎉 Your loan application is complete!")

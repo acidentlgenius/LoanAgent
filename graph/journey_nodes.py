@@ -13,9 +13,13 @@ from graph.llm import (
     extract_step_data,
     generate_review_summary,
     generate_final_summary,
+    get_missing_required_fields,
+    generate_missing_fields_prompt,
+    validate_and_normalize,
 )
 from workers.document_processor import process_document_async
 from workers import processing_store
+from config import MAX_RETRIES_PER_STEP
 
 # ── Document types expected at step 5 ──────────────────────────────────
 REQUIRED_DOCUMENTS = ["bank_statement", "payslip", "cibil", "pan", "aadhaar"]
@@ -49,23 +53,38 @@ def _sync_docs(state: LoanState) -> Dict[str, Any]:
 # ── Universal Step Node ────────────────────────────────────────────────
 async def universal_step_node(state: LoanState, step_name: str) -> Dict[str, Any]:
     """
-    Generic LLM-powered step handler.
+    Generic LLM-powered step handler with retry for missing/invalid data.
     Used for all steps that follow the prompt -> interrupt -> extract pattern.
+    Re-prompts (up to MAX_RETRIES_PER_STEP) if required fields are missing before advancing.
     """
-    prompt = await generate_step_message(step_name, state["current_step"], state["journey_data"])
+    journey_data = dict(state["journey_data"])
+    retries_left = MAX_RETRIES_PER_STEP
+    prompt = await generate_step_message(step_name, state["current_step"], journey_data)
 
-    user_text = interrupt({
-        "type": "journey_step",
-        "step": state["current_step"],
-        "field": step_name,
-        "message": prompt,
-    })
+    while True:
+        user_text = interrupt({
+            "type": "journey_step",
+            "step": state["current_step"],
+            "field": step_name,
+            "message": prompt,
+        })
 
-    # ── Runs only on resume (after interrupt returns) ──
-    extracted = await extract_step_data(step_name, str(user_text))
+        # ── Runs only on resume (after interrupt returns) ──
+        extracted = await extract_step_data(step_name, str(user_text))
+        validated, _ = validate_and_normalize(step_name, extracted)
+        merged = {**extracted, **validated}
+
+        missing = get_missing_required_fields(step_name, merged)
+        if not missing or retries_left <= 0:
+            # Accept what we have and move on (or we exhausted retries)
+            break
+
+        # Re-prompt for missing fields
+        retries_left -= 1
+        prompt = await generate_missing_fields_prompt(step_name, missing, journey_data)
 
     result = {
-        "journey_data": {**state["journey_data"], step_name: extracted},
+        "journey_data": {**journey_data, step_name: merged},
         "current_step": state["current_step"] + 1,
         "max_steps_guard": state["max_steps_guard"] + 1,
     }
