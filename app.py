@@ -6,6 +6,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from graph.state import initial_state
 from graph.builder import build_graph
+from workers import processing_store
 
 # ── Page config ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="Loan Agent", page_icon="🏦", layout="centered")
@@ -22,10 +23,10 @@ st.markdown("""
         display: inline-block; padding: 3px 10px; border-radius: 8px;
         margin: 2px 4px; font-size: 0.78em; font-weight: 500;
     }
-    .doc-pending    { background: #FEF3C7; color: #92400E; }
-    .doc-processing { background: #DBEAFE; color: #1E40AF; }
-    .doc-completed  { background: #D1FAE5; color: #065F46; }
-    .doc-verified   { background: #E0E7FF; color: #3730A3; }
+    .doc-pending            { background: #FEF3C7; color: #92400E; }
+    .doc-processing         { background: #DBEAFE; color: #1E40AF; }
+    .doc-ready_for_verification { background: #FDE68A; color: #78350F; }
+    .doc-verified           { background: #D1FAE5; color: #065F46; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,6 +40,7 @@ def _init_session():
         st.session_state.started = False
         st.session_state.messages = []
         st.session_state.pending_interrupt = None
+        processing_store.reset()
 
 _init_session()
 
@@ -48,7 +50,6 @@ config = st.session_state.config
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 def get_interrupt():
-    """Extract the pending interrupt payload."""
     snapshot = graph.get_state(config)
     if snapshot and snapshot.tasks:
         for task in snapshot.tasks:
@@ -64,16 +65,7 @@ def get_state_values():
 
 def format_interrupt(data: dict) -> str:
     """Format interrupt payload as a chat message."""
-    msg_type = data.get("type", "")
-    message = data.get("message", "")
-
-    if msg_type == "document_verification":
-        fields = data.get("extracted_fields", {})
-        field_lines = "\n".join(f"  • **{k}**: `{v}`" for k, v in fields.items())
-        return f"{message}\n\n{field_lines}\n\nReply **confirm** or provide corrections."
-
-    # All other types: the LLM already generated a natural message
-    return message
+    return data.get("message", "")
 
 
 # ── Sidebar ─────────────────────────────────────────────────────────────
@@ -90,16 +82,32 @@ with st.sidebar:
         else:
             st.caption(f"Guard: {vals.get('max_steps_guard', 0)}/25")
 
-        # Document chips
+        # Document status chips
         doc_status = vals.get("documents_status", {})
         if doc_status:
             st.markdown("**📄 Documents**")
             for doc, status in doc_status.items():
+                emoji = {"processing": "⏳", "ready_for_verification": "🟡", "verified": "✅"}.get(status, "⬜")
+                css_class = f"doc-{status}"
                 st.markdown(
-                    f'<span class="doc-chip doc-{status}">'
-                    f'{doc.replace("_", " ").title()}: {status}</span>',
+                    f'<span class="doc-chip {css_class}">'
+                    f'{emoji} {doc.replace("_", " ").title()}: {status.replace("_", " ")}</span>',
                     unsafe_allow_html=True,
                 )
+
+            # Show processing indicator
+            still_processing = processing_store.get_processing_docs()
+            if still_processing:
+                with st.status("Processing documents...", expanded=False):
+                    for d in still_processing:
+                        st.write(f"⏳ {d.replace('_', ' ').title()}")
+
+        # Verification queue
+        queue = vals.get("verification_queue", [])
+        if queue:
+            st.markdown("**🔍 Verification Queue**")
+            for doc in queue:
+                st.caption(f"  → {doc.replace('_', ' ').title()}")
 
         # Collected data preview
         journey = vals.get("journey_data", {})
@@ -112,7 +120,18 @@ with st.sidebar:
                     else:
                         st.caption(f"**{key}**: {val}")
 
+        # Extracted doc data
+        extracted = vals.get("extracted_data", {})
+        if extracted:
+            with st.expander("📑 Extracted Data", expanded=False):
+                for doc, fields in extracted.items():
+                    st.caption(f"**{doc.replace('_', ' ').title()}**")
+                    if isinstance(fields, dict):
+                        for k, v in fields.items():
+                            st.caption(f"  {k.replace('_', ' ').title()}: {v}")
+
     if st.button("🔄 Reset"):
+        processing_store.reset()
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
@@ -136,8 +155,11 @@ if not st.session_state.started:
         interrupt_data = get_interrupt()
         if interrupt_data:
             st.session_state.pending_interrupt = interrupt_data
-            bot_msg = format_interrupt(interrupt_data)
-            st.session_state.messages.append({"role": "assistant", "content": bot_msg, "avatar": "🏦"})
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": format_interrupt(interrupt_data),
+                "avatar": "🏦",
+            })
         st.rerun()
 
 # Chat input
@@ -145,24 +167,24 @@ elif not get_state_values().get("finished", False):
     if user_text := st.chat_input("Type your response..."):
         st.session_state.messages.append({"role": "user", "content": user_text, "avatar": "👤"})
 
-        # Parse document uploads specially
+        # Parse input based on interrupt type
         interrupt_data = st.session_state.pending_interrupt or {}
-        if interrupt_data.get("type") == "document_upload" and ":" in user_text:
-            parsed = {}
-            for part in user_text.split(","):
-                if ":" in part:
-                    k, v = part.split(":", 1)
-                    parsed[k.strip().lower().replace(" ", "_")] = v.strip()
-            resume_data = parsed or user_text
-        elif interrupt_data.get("type") == "document_verification":
-            resume_data = {"confirmed": True} if user_text.strip().lower() == "confirm" else user_text
+        if interrupt_data.get("type") == "document_verification":
+            if user_text.strip().lower() == "confirm":
+                resume_data = {"confirmed": True}
+            else:
+                resume_data = user_text
         else:
-            resume_data = user_text  # Free text → LLM will extract
+            resume_data = user_text  # Free text → LLM extracts
 
         try:
             graph.invoke(Command(resume=resume_data), config)
         except Exception as e:
-            st.session_state.messages.append({"role": "assistant", "content": f"⚠️ {e}", "avatar": "🏦"})
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": f"⚠️ {e}",
+                "avatar": "🏦",
+            })
             st.rerun()
 
         next_interrupt = get_interrupt()

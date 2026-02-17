@@ -7,7 +7,7 @@ load_dotenv()  # Load from .env file
 
 # LLM (Google Gemini)
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash-lite")
 
 # Journey limits
 MAX_STEPS_GUARD = 25  # Hard terminate if exceeded

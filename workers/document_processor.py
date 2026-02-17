@@ -1,40 +1,68 @@
-"""Async document processor — extracts structured data from uploaded documents.
+"""Async document processor — simulates 2-10s extraction per document.
 
-In production this would be a Celery task or a background asyncio job.
-For now, provides a simulated async interface.
+Spawns a background thread for each document.  When done, stores
+dummy extracted data in the processing_store.  Journey nodes pick up
+completed docs and inject them into verification_queue.
 """
 
-import asyncio
+import random
+import time
+import threading
 from typing import Any
 
-# Expected fields per document type
-DOC_FIELDS: dict[str, list[str]] = {
-    "bank_statement": ["bank_name", "account_number", "ifsc", "account_holder", "balance"],
-    "payslip": ["employer", "gross_salary", "net_salary", "pay_period"],
-    "cibil": ["cibil_score", "report_date", "outstanding_loans"],
-    "pan": ["pan_number", "name_on_pan", "dob"],
-    "aadhaar": ["aadhaar_number", "name_on_aadhaar", "address"],
+from workers import processing_store
+
+# ── Dummy extracted data per document type ──────────────────────────────
+DUMMY_DATA: dict[str, dict[str, Any]] = {
+    "bank_statement": {
+        "bank_name": "HDFC Bank",
+        "ifsc": "HDFC0001234",
+        "account_number": "50100012345678",
+        "account_holder_name": "Abhinav Maurya",
+    },
+    "payslip": {
+        "monthly_salary": "75000",
+    },
+    "cibil": {
+        "cibil_score": "742",
+    },
+    "pan": {
+        "pan_number": "ABCDE1234F",
+    },
+    "aadhaar": {
+        "aadhaar_number": "1234 5678 9012",
+    },
 }
 
 
-async def process_document(doc_type: str, file_path: str) -> dict[str, Any]:
-    """
-    Extract structured data from a document.
-    In production: call an LLM with the extraction prompt.
-    Here: returns placeholder extracted fields.
-    """
-    await asyncio.sleep(0.1)  # simulate I/O
-    fields = DOC_FIELDS.get(doc_type, [])
-    return {field: f"<extracted_{field}>" for field in fields}
+# Incremental delays so documents finish one-by-one during the journey
+DOC_DELAYS: dict[str, float] = {
+    "bank_statement": 2.0,
+    "payslip": 10.0,
+    "cibil": 20.0,
+    "pan": 20.0,
+    "aadhaar": 25.0,
+}
+
+
+def _process_worker(doc_type: str) -> None:
+    """Background worker: sleep incremental seconds, then store dummy result."""
+    delay = DOC_DELAYS.get(doc_type, 5.0)
+    time.sleep(delay)
+    data = DUMMY_DATA.get(doc_type, {"raw": f"<extracted_{doc_type}>"})
+    processing_store.store_result(doc_type, data)
 
 
 def process_document_async(doc_type: str, file_path: str) -> None:
     """
-    Fire-and-forget: schedule document processing in the background.
-    The worker will update state (documents_status, extracted_data,
-    verification_queue) via the checkpointer once extraction completes.
+    Fire-and-forget: start a background thread to process the document.
+    The thread will store results in the processing_store when done.
     """
-    # In production: celery_app.send_task(...) or asyncio.create_task(...)
-    # For development, this is a no-op placeholder — the test harness
-    # simulates completed processing by directly updating state.
-    pass
+    processing_store.mark_processing(doc_type)
+    thread = threading.Thread(
+        target=_process_worker,
+        args=(doc_type,),
+        daemon=True,
+        name=f"doc-processor-{doc_type}",
+    )
+    thread.start()
